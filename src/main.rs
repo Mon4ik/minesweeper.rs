@@ -1,7 +1,11 @@
-use std::io::{stdout, Result};
+use std::{
+    io::{stdout, Result},
+    str::FromStr,
+};
 
 use constants::*;
 use game_cell::GameCell;
+use game_option::GameOption;
 use game_types::{Cell, CellState, CellValue, GameSettings};
 use game_utils::{get_bombs_around, get_neighbours};
 use rand::Rng;
@@ -19,6 +23,7 @@ use vctr2::vector2::Vector2;
 
 mod constants;
 mod game_cell;
+mod game_option;
 mod game_types;
 mod game_utils;
 
@@ -53,6 +58,7 @@ enum AppState {
 struct App {
     cells: Vec<Vec<Cell>>,
     cursor: Vector2<u16>,
+    mines_created: bool,
 
     state: AppState,
     game_settings: GameSettings,
@@ -61,8 +67,10 @@ struct App {
 impl App {
     pub fn new() -> Self {
         Self {
-            cells: Self::generate_cells(&DIFFICULY_BEGINNER),
+            cells: Self::generate_empty_cells(&DIFFICULY_BEGINNER),
             cursor: Vector2::new(0, 0),
+            mines_created: false,
+
             state: AppState::Menu,
             game_settings: DIFFICULY_BEGINNER,
         }
@@ -73,14 +81,41 @@ impl App {
 
         match self.state {
             AppState::Menu => {
-                // let rect = Rect::new(rect_x, rect_y, CELL_WIDTH, CELL_HEIGHT);
-                //
-                // frame.render_widget(
-                //     Block::bordered()
-                //         .border_set(symbols::border::DOUBLE)
-                //         .border_style(Color::Green),
-                //     rect,
-                // )
+                let area = Rect::new(3, 1, (self.game_settings.size.x * (CELL_WIDTH - 1)) - 5, 10);
+                frame.render_widget(Clear::default(), area);
+                frame.render_widget(Block::bordered(), area);
+
+                frame.render_widget(
+                    Paragraph::new(Line::from(vec![
+                        "Minesweeper".bold().into(),
+                        ".rs"
+                            .bold()
+                            .fg(Color::from_str("#E43716").unwrap_or(Color::LightRed))
+                            .into(),
+                    ])),
+                    Rect::new(4, 2, area.width, 1),
+                );
+
+                frame.render_widget(
+                    GameOption::default()
+                        .title("Beginner".to_string())
+                        .selected(self.cursor.y == 0),
+                    Rect::new(5, 4, area.width, 1),
+                );
+
+                frame.render_widget(
+                    GameOption::default()
+                        .title("Intermediate".to_string())
+                        .selected(self.cursor.y == 1),
+                    Rect::new(5, 5, area.width, 1),
+                );
+
+                frame.render_widget(
+                    GameOption::default()
+                        .title("Expert".to_string())
+                        .selected(self.cursor.y == 2),
+                    Rect::new(5, 6, area.width, 1),
+                );
             }
             AppState::Playing => {
                 // Cursor
@@ -128,11 +163,28 @@ impl App {
                         KeyCode::Esc => {
                             return Ok(true);
                         }
-                        KeyCode::Up => {}
-                        KeyCode::Down => {}
+                        KeyCode::Up => {
+                            if self.cursor.y != 0 {
+                                self.cursor.y -= 1;
+                            }
+                        }
+                        KeyCode::Down => {
+                            if self.cursor.y != 2 {
+                                self.cursor.y += 1;
+                            }
+                        }
                         KeyCode::Enter => {
-                            self.game_settings = DIFFICULY_BEGINNER;
-                            self.cells = Self::generate_cells(&DIFFICULY_BEGINNER);
+                            if self.cursor.y == 0 {
+                                self.game_settings = DIFFICULY_BEGINNER;
+                                self.cells = Self::generate_empty_cells(&DIFFICULY_BEGINNER);
+                            } else if self.cursor.y == 1 {
+                                self.game_settings = DIFFICULY_INTERMEDIATE;
+                                self.cells = Self::generate_empty_cells(&DIFFICULY_INTERMEDIATE);
+                            } else if self.cursor.y == 2 {
+                                self.game_settings = DIFFICULY_EXPERT;
+                                self.cells = Self::generate_empty_cells(&DIFFICULY_EXPERT);
+                            }
+
                             self.cursor = Vector2::new(0, 0);
                             self.state = AppState::Playing;
                         }
@@ -146,10 +198,20 @@ impl App {
                             // k
                             match key.code {
                                 KeyCode::Esc => {
-                                    self.open_dead_mines();
-                                    self.state = AppState::Dead;
+                                    if self.mines_created {
+                                        self.open_all_mines();
+                                        self.state = AppState::Dead;
+                                    } else {
+                                        self.state = AppState::Menu;
+                                    }
                                 }
-                                KeyCode::Enter => self.open_cell(&self.cursor.clone()),
+                                KeyCode::Enter => {
+                                    if !self.mines_created {
+                                        self.generate_cells();
+                                        self.mines_created = true;
+                                    }
+                                    self.open_cell(&self.cursor.clone())
+                                }
                                 KeyCode::Char('f') => self.flag_cell(&self.cursor.clone()),
                                 // Cursor movement
                                 KeyCode::Left => {
@@ -179,17 +241,14 @@ impl App {
                         _ => {}
                     }
                 }
-                AppState::Dead => {
-                    self.state = AppState::Menu;
-                    self.cells = Self::generate_cells(&DIFFICULY_BEGINNER);
-                }
+                AppState::Dead => self.reset_game(),
             }
         }
 
         Ok(false)
     }
 
-    fn generate_cells(game_settings: &GameSettings) -> Vec<Vec<Cell>> {
+    fn generate_empty_cells(game_settings: &GameSettings) -> Vec<Vec<Cell>> {
         let mut cells = Vec::new();
 
         for _y in 0..game_settings.size.x {
@@ -205,22 +264,28 @@ impl App {
             cells.push(row)
         }
 
+        cells
+    }
+
+    fn generate_cells(&mut self) {
         let mut rng = rand::thread_rng();
 
-        let mut count = game_settings.mines;
+        let mut count = self.game_settings.mines;
+        let excluded_positions = get_neighbours(&self.game_settings.size, &self.cursor);
 
         while count > 0 {
-            let x = rng.gen_range(0..game_settings.size.x) as usize;
-            let y = rng.gen_range(0..game_settings.size.y) as usize;
+            let x = rng.gen_range(0..self.game_settings.size.x);
+            let y = rng.gen_range(0..self.game_settings.size.y);
 
-            if cells[y][x].value != CellValue::Bomb {
-                cells[y][x].value = CellValue::Bomb;
+            if excluded_positions.contains(&Vector2::new(x, y)) {
+                continue;
+            }
+
+            if self.cells[y as usize][x as usize].value != CellValue::Bomb {
+                self.cells[y as usize][x as usize].value = CellValue::Bomb;
                 count -= 1;
             }
         }
-        for _i in 0..10 {}
-
-        return cells;
     }
 
     //     fn get_cell_symbol(&self, x: u16, y: u16) -> char {
@@ -239,7 +304,7 @@ impl App {
         let cell = &self.cells[position.y as usize][position.x as usize];
 
         if cell.value == CellValue::Bomb {
-            self.open_dead_mines();
+            self.open_all_mines();
             return;
         }
 
@@ -280,7 +345,7 @@ impl App {
         }
     }
 
-    fn open_dead_mines(&mut self) {
+    fn open_all_mines(&mut self) {
         self.state = AppState::Dead;
         for y in 0..self.cells.len() {
             for x in 0..self.cells[y].len() {
@@ -289,5 +354,13 @@ impl App {
                 }
             }
         }
+    }
+
+    fn reset_game(&mut self) {
+        self.cursor = Vector2::new(0, 0);
+        self.state = AppState::Menu;
+        self.game_settings = DIFFICULY_BEGINNER;
+        self.cells = Self::generate_empty_cells(&DIFFICULY_BEGINNER);
+        self.mines_created = false;
     }
 }

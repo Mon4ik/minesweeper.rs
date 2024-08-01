@@ -20,11 +20,11 @@ pub(crate) const DIFFICULY_BEGINNER: GameSettings = GameSettings {
 };
 
 pub(crate) const DIFFICULY_INTERMEDIATE: GameSettings = GameSettings {
-    size: Vector2::new(16, 16),
-    mines: 40,
+    size: Vector2::new(11, 11),
+    mines: 20,
 };
 
 pub(crate) const DIFFICULY_EXPERT: GameSettings = GameSettings {
-    size: Vector2::new(16, 30),
-    mines: 99,
+    size: Vector2::new(15, 15),
+    mines: 30,
 };
